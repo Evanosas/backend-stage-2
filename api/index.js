@@ -16,10 +16,13 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// ─── DB ──────────────────────────────────────────────────────────────────────
+// ─── DB — optimised for Vercel serverless + Supabase Transaction pooler ──────
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
+    max: 1,                      // serverless: one connection per instance
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 10000,
 });
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -30,33 +33,7 @@ function getAgeGroup(age) {
     return 'senior';
 }
 
-// Initialize table + indexes (runs on cold start)
-async function initTable() {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS profiles (
-                id                  VARCHAR PRIMARY KEY,
-                name                VARCHAR UNIQUE NOT NULL,
-                gender              VARCHAR,
-                gender_probability  FLOAT,
-                age                 INT,
-                age_group           VARCHAR,
-                country_id          VARCHAR(2),
-                country_name        VARCHAR,
-                country_probability FLOAT,
-                created_at          TIMESTAMP DEFAULT NOW()
-            )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_gender     ON profiles(gender)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_age_group  ON profiles(age_group)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_country_id ON profiles(country_id)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_age        ON profiles(age)`);
-        console.log('✅ Table ready');
-    } catch (err) {
-        console.error('Table init error:', err.message);
-    }
-}
-initTable();
+// Table is created by seed.js — no auto-init needed on cold start.
 
 // ─── COUNTRY NAME → ISO CODE MAP ─────────────────────────────────────────────
 // Used by the NLP parser to turn "nigeria" → "NG"
