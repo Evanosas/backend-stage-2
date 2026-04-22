@@ -1,7 +1,25 @@
 const express = require('express');
 const axios = require('axios');
-const { v7: uuidv7 } = require('uuid');
+const crypto = require('crypto');
 const { Pool } = require('pg');
+
+// UUID v7 generator (timestamp-ordered, RFC 9562)
+// Uses Node.js built-in crypto — no ESM-only packages needed
+function uuidv7() {
+    const now = BigInt(Date.now());
+    const buf = Buffer.alloc(16);
+    // Bytes 0-5: 48-bit Unix timestamp in ms
+    buf.writeUIntBE(Number((now >> 16n) & 0xffffn), 0, 2);
+    buf.writeUIntBE(Number(now & 0xffffffffffffn), 2, 6);
+    // Fill rest with random bytes
+    const rand = crypto.randomBytes(10);
+    rand.copy(buf, 6);
+    // Set version (7) and variant bits
+    buf[6] = (buf[6] & 0x0f) | 0x70;
+    buf[8] = (buf[8] & 0x3f) | 0x80;
+    const hex = buf.toString('hex');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
 
 const app = express();
 

@@ -1,6 +1,19 @@
 const { Pool } = require('pg');
 const fs = require('fs');
-const { v7: uuidv7 } = require('uuid');
+const crypto = require('crypto');
+
+function uuidv7() {
+    const now = BigInt(Date.now());
+    const buf = Buffer.alloc(16);
+    buf.writeUIntBE(Number((now >> 16n) & 0xffffn), 0, 2);
+    buf.writeUIntBE(Number(now & 0xffffffffffffn), 2, 6);
+    const rand = crypto.randomBytes(10);
+    rand.copy(buf, 6);
+    buf[6] = (buf[6] & 0x0f) | 0x70;
+    buf[8] = (buf[8] & 0x3f) | 0x80;
+    const hex = buf.toString('hex');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
