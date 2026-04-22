@@ -16,14 +16,18 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// ─── DB — optimised for Vercel serverless + Supabase Transaction pooler ──────
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-    max: 1,                      // serverless: one connection per instance
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000,
-});
+let pool;
+try {
+    pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false },
+        max: 1,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 10000,
+    });
+} catch (e) {
+    console.error('Pool init error:', e.message);
+}
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function getAgeGroup(age) {
@@ -475,8 +479,17 @@ app.delete('/api/profiles/:id', async (req, res) => {
 });
 
 // GET /api/health
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok' });
+app.get('/api/health', async (req, res) => {
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) {
+        return res.status(500).json({ status: 'error', message: 'DATABASE_URL not set' });
+    }
+    try {
+        await pool.query('SELECT 1');
+        res.json({ status: 'ok', db: 'connected' });
+    } catch (e) {
+        res.status(500).json({ status: 'error', db: 'disconnected', message: e.message });
+    }
 });
 
 // Start server locally
