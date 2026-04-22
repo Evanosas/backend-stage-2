@@ -4,10 +4,14 @@ const { v7: uuidv7 } = require('uuid');
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
+    // Keep connection alive longer
+    connectionTimeoutMillis: 30000,
+    idleTimeoutMillis: 60000,
 });
 
 async function seed() {
+    const client = await pool.connect();
     try {
         const data = fs.readFileSync('./seed_profiles.json', 'utf8');
         const { profiles } = JSON.parse(data);
@@ -18,8 +22,8 @@ async function seed() {
 
         console.log(`📦 Found ${profiles.length} profiles to seed...`);
 
-        // Ensure table exists with correct schema before seeding
-        await pool.query(`
+        // Ensure table + indexes exist
+        await client.query(`
             CREATE TABLE IF NOT EXISTS profiles (
                 id                  VARCHAR PRIMARY KEY,
                 name                VARCHAR UNIQUE NOT NULL,
@@ -33,27 +37,27 @@ async function seed() {
                 created_at          TIMESTAMP DEFAULT NOW()
             )
         `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_profiles_gender     ON profiles(gender)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_profiles_age_group  ON profiles(age_group)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_profiles_country_id ON profiles(country_id)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_profiles_age        ON profiles(age)`);
 
-        // Add indexes for fast filtering (safe to run multiple times)
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_gender ON profiles(gender)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_age_group ON profiles(age_group)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_country_id ON profiles(country_id)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_profiles_age ON profiles(age)`);
+        console.log('✅ Table and indexes ready');
 
+        // Insert in batches of 100 to avoid connection timeouts
+        const BATCH_SIZE = 100;
         let inserted = 0;
         let skipped = 0;
 
-        for (const profile of profiles) {
-            const id = uuidv7();
-            const createdAt = new Date().toISOString();
+        for (let i = 0; i < profiles.length; i += BATCH_SIZE) {
+            const batch = profiles.slice(i, i + BATCH_SIZE);
 
-            const result = await pool.query(
-                `INSERT INTO profiles 
-                    (id, name, gender, gender_probability, age, age_group, country_id, country_name, country_probability, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                 ON CONFLICT (name) DO NOTHING`,
-                [
-                    id,
+            // Build a single multi-row INSERT for the batch
+            const values = [];
+            const placeholders = batch.map((profile, j) => {
+                const base = j * 9;
+                values.push(
+                    uuidv7(),
                     profile.name.toLowerCase(),
                     profile.gender,
                     profile.gender_probability,
@@ -61,24 +65,35 @@ async function seed() {
                     profile.age_group,
                     profile.country_id,
                     profile.country_name,
-                    profile.country_probability,
-                    createdAt
-                ]
+                    profile.country_probability
+                );
+                return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, NOW())`;
+            });
+
+            const result = await client.query(
+                `INSERT INTO profiles
+                    (id, name, gender, gender_probability, age, age_group, country_id, country_name, country_probability, created_at)
+                 VALUES ${placeholders.join(', ')}
+                 ON CONFLICT (name) DO NOTHING`,
+                values
             );
 
-            if (result.rowCount > 0) {
-                inserted++;
-            } else {
-                skipped++;
-            }
+            inserted += result.rowCount;
+            skipped  += batch.length - result.rowCount;
+
+            const done = Math.min(i + BATCH_SIZE, profiles.length);
+            console.log(`   Progress: ${done}/${profiles.length} processed...`);
         }
 
-        console.log(`✅ Seeded ${inserted} new profiles`);
+        console.log(`\n✅ Seeded ${inserted} new profiles`);
         console.log(`⏭️  Skipped ${skipped} existing profiles`);
         process.exit(0);
     } catch (error) {
         console.error('Seed error:', error.message || error);
         process.exit(1);
+    } finally {
+        client.release();
+        await pool.end();
     }
 }
 
