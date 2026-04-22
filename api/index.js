@@ -18,13 +18,26 @@ app.use(express.json());
 
 let pool;
 try {
-    pool = new Pool({
-        connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false },
-        max: 1,
-        idleTimeoutMillis: 10000,
-        connectionTimeoutMillis: 10000,
-    });
+    // Use explicit config instead of connection string to avoid URL-parsing
+    // issues with special characters (? etc.) in the password
+    const dbUrl = process.env.DATABASE_URL;
+    if (dbUrl) {
+        // Parse the URL manually so we can pass parts individually
+        const url = new URL(dbUrl.replace('postgresql://', 'http://').replace('postgres://', 'http://'));
+        pool = new Pool({
+            host:     url.hostname,
+            port:     parseInt(url.port) || 5432,
+            user:     decodeURIComponent(url.username),
+            password: decodeURIComponent(url.password),
+            database: url.pathname.replace('/', ''),
+            ssl:      { rejectUnauthorized: false },
+            max:      1,
+            idleTimeoutMillis:      10000,
+            connectionTimeoutMillis: 10000,
+        });
+    } else {
+        console.error('DATABASE_URL is not set');
+    }
 } catch (e) {
     console.error('Pool init error:', e.message);
 }
