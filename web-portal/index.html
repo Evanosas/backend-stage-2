@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Insighta Labs+ — Secure Demographic Intelligence Platform">
+    <title>Insighta Labs+ Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="src/styles/index.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login Page -->
+        <div id="login-page" class="page active">
+            <div class="login-container">
+                <div class="login-card">
+                    <div class="logo">
+                        <span class="logo-icon">◈</span>
+                        <h1>Insighta Labs<sup>+</sup></h1>
+                    </div>
+                    <p class="subtitle">Secure Demographic Intelligence Platform</p>
+                    <button id="github-login-btn" class="btn btn-github" onclick="startLogin()">
+                        <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                        Login with GitHub
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="dashboard-page" class="page">
+            <nav class="navbar">
+                <div class="nav-brand"><span class="logo-icon-sm">◈</span> Insighta Labs<sup>+</sup></div>
+                <div class="nav-links">
+                    <a href="#" class="nav-link active" data-page="profiles">Profiles</a>
+                    <a href="#" class="nav-link" data-page="search">Search</a>
+                    <a href="#" class="nav-link admin-only" data-page="admin">Admin</a>
+                </div>
+                <div class="nav-user">
+                    <span id="user-badge" class="badge"></span>
+                    <span id="user-name"></span>
+                    <button class="btn btn-sm btn-outline" onclick="doLogout()">Logout</button>
+                </div>
+            </nav>
+
+            <main class="main-content">
+                <!-- Profiles Section -->
+                <section id="profiles-section" class="section active">
+                    <div class="section-header">
+                        <h2>Profiles</h2>
+                        <div class="actions">
+                            <button class="btn btn-sm btn-primary" onclick="exportCSV()">Export CSV</button>
+                        </div>
+                    </div>
+                    <div class="filters-bar">
+                        <select id="filter-gender" onchange="loadProfiles()"><option value="">All Genders</option><option value="male">Male</option><option value="female">Female</option></select>
+                        <select id="filter-age-group" onchange="loadProfiles()"><option value="">All Ages</option><option value="child">Child</option><option value="teenager">Teenager</option><option value="adult">Adult</option><option value="senior">Senior</option></select>
+                        <input id="filter-country" placeholder="Country code (e.g. NG)" oninput="loadProfiles()">
+                        <select id="filter-sort" onchange="loadProfiles()"><option value="created_at">Date</option><option value="age">Age</option><option value="gender_probability">Gender Prob</option></select>
+                        <select id="filter-order" onchange="loadProfiles()"><option value="asc">Asc</option><option value="desc">Desc</option></select>
+                    </div>
+                    <div id="profiles-table-container"></div>
+                    <div id="profiles-pagination" class="pagination"></div>
+                </section>
+
+                <!-- Search Section -->
+                <section id="search-section" class="section">
+                    <h2>Natural Language Search</h2>
+                    <div class="search-bar">
+                        <input id="search-input" type="text" placeholder='Try: "young males from nigeria"' onkeydown="if(event.key==='Enter')doSearch()">
+                        <button class="btn btn-primary" onclick="doSearch()">Search</button>
+                    </div>
+                    <div id="search-results"></div>
+                    <div id="search-pagination" class="pagination"></div>
+                </section>
+
+                <!-- Admin Section -->
+                <section id="admin-section" class="section admin-only">
+                    <h2>Admin Panel</h2>
+                    <div class="admin-tabs">
+                        <button class="tab active" onclick="showAdminTab('users')">Users</button>
+                        <button class="tab" onclick="showAdminTab('logs')">Request Logs</button>
+                    </div>
+                    <div id="admin-users" class="admin-tab active"></div>
+                    <div id="admin-logs" class="admin-tab"></div>
+                </section>
+            </main>
+        </div>
+    </div>
+    <script src="src/js/app.js"></script>
+</body>
+</html>

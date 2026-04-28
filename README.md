@@ -1,185 +1,220 @@
-# Insighta Labs — Demographic Intelligence API
+# Insighta Labs+ — Secure Demographic Intelligence API
 
-A demographic query engine built with Node.js + Express, backed by PostgreSQL (Supabase), deployed on Vercel.
+A demographic intelligence platform with GitHub OAuth (PKCE), role-based access control, and multi-interface support (API, CLI, Web Portal). Built with Node.js + Express, backed by PostgreSQL (Supabase), deployed on Vercel.
+
+**Live Backend URL:** https://backendstage1-api.vercel.app
 
 ---
 
-## Endpoints
+## System Architecture
 
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐
+│  CLI Tool    │     │  Web Portal  │     │  Direct API Client   │
+│  (Bearer)    │     │  (Cookies)   │     │  (Bearer Token)      │
+└──────┬───────┘     └──────┬───────┘     └──────────┬───────────┘
+       │                    │                        │
+       └────────────────────┼────────────────────────┘
+                            │
+                   ┌────────▼────────┐
+                   │  Express API    │
+                   │  /api/v1/*      │
+                   ├─────────────────┤
+                   │ Rate Limiter    │
+                   │ Request Logger  │
+                   │ CSRF Protection │
+                   │ JWT Auth        │
+                   │ RBAC Middleware  │
+                   └────────┬────────┘
+                            │
+                   ┌────────▼────────┐
+                   │  PostgreSQL     │
+                   │  (Supabase)     │
+                   └─────────────────┘
+```
+
+### Components
+- **Backend API** (this repo): Express.js REST API with GitHub OAuth, JWT auth, RBAC
+- **CLI Tool** (insighta-cli repo): Globally installable Node.js CLI with PKCE auth
+- **Web Portal** (insighta-web-portal repo): Browser-based dashboard with cookie auth + CSRF
+
+---
+
+## Authentication Flow
+
+### GitHub OAuth with PKCE
+
+1. Client initiates login → backend generates `code_verifier` + `code_challenge` (S256)
+2. User redirected to GitHub authorize URL with `code_challenge`
+3. GitHub redirects back with `code` → backend exchanges it with `code_verifier`
+4. Backend fetches GitHub user profile, creates/updates user in DB
+5. Backend issues JWT access token (15min) + refresh token (7 days)
+
+### Token Delivery by Client Type
+
+| Client | Access Token | Refresh Token | CSRF |
+|--------|-------------|---------------|------|
+| **CLI** | JSON response body | JSON response body | N/A |
+| **Web Portal** | HTTP-only cookie | HTTP-only cookie | Non-HTTP-only cookie |
+| **API** | Bearer header | Request body | N/A |
+
+### Token Refresh
+- `POST /api/v1/auth/refresh` with refresh token → new access + refresh token pair
+- Old refresh token is invalidated (rotation)
+- Refresh tokens are SHA-256 hashed before DB storage
+
+---
+
+## Token Handling Approach
+
+- **Access tokens**: JWT signed with `JWT_SECRET`, 15-minute expiry, payload contains `{ userId, role, githubUsername }`
+- **Refresh tokens**: Random 64-byte hex strings, hashed (SHA-256) before database storage, 7-day expiry
+- **Token rotation**: Each refresh invalidates the old token and issues a new pair
+- **Storage**: CLI stores tokens in `~/.insighta/credentials.json`; Web Portal uses HTTP-only cookies
+- **Extraction**: Middleware checks `Authorization: Bearer <token>` header first, then falls back to cookies
+
+---
+
+## Role Enforcement Logic
+
+Two roles: **admin** and **analyst**
+
+### Role Assignment
+- First registered user automatically becomes `admin`
+- Users matching `DEFAULT_ADMIN_GITHUB_ID` env var become `admin`
+- All other users default to `analyst`
+- Admins can change any user's role via `PATCH /api/v1/admin/users/:id/role`
+
+### Endpoint Permissions
+
+| Endpoint | Method | Admin | Analyst |
+|----------|--------|-------|---------|
+| `/api/v1/profiles` | GET | ✅ | ✅ |
+| `/api/v1/profiles` | POST | ✅ | ❌ |
+| `/api/v1/profiles/:id` | GET | ✅ | ✅ |
+| `/api/v1/profiles/:id` | DELETE | ✅ | ❌ |
+| `/api/v1/profiles/search` | GET | ✅ | ✅ |
+| `/api/v1/profiles/export/csv` | GET | ✅ | ✅ |
+| `/api/v1/auth/*` | ALL | ✅ | ✅ |
+| `/api/v1/admin/users` | GET | ✅ | ❌ |
+| `/api/v1/admin/users/:id/role` | PATCH | ✅ | ❌ |
+| `/api/v1/admin/logs` | GET | ✅ | ❌ |
+
+Enforcement is done via `authorize('admin')` middleware that returns 403 for unauthorized roles.
+
+---
+
+## API Endpoints (v1)
+
+### Authentication
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/profiles` | Create a new profile via name (calls genderize/agify/nationalize) |
-| `GET` | `/api/profiles` | List all profiles with filtering, sorting, and pagination |
-| `GET` | `/api/profiles/search` | Natural language profile search |
-| `GET` | `/api/profiles/:id` | Get a single profile by UUID |
-| `DELETE` | `/api/profiles/:id` | Delete a profile |
+| `GET` | `/api/v1/auth/github` | Start GitHub OAuth + PKCE flow |
+| `GET` | `/api/v1/auth/github/callback` | OAuth callback handler |
+| `POST` | `/api/v1/auth/refresh` | Refresh access token |
+| `POST` | `/api/v1/auth/logout` | Invalidate refresh token |
+| `GET` | `/api/v1/auth/me` | Get current user profile |
+
+### Profiles (authenticated)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/profiles` | Create profile (admin only) |
+| `GET` | `/api/v1/profiles` | List profiles with filtering/sorting/pagination |
+| `GET` | `/api/v1/profiles/search` | Natural language search |
+| `GET` | `/api/v1/profiles/:id` | Get single profile |
+| `DELETE` | `/api/v1/profiles/:id` | Delete profile (admin only) |
+| `GET` | `/api/v1/profiles/export/csv` | Export profiles as CSV |
+
+### Admin (admin only)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/admin/users` | List all users |
+| `PATCH` | `/api/v1/admin/users/:id/role` | Change user role |
+| `GET` | `/api/v1/admin/logs` | View request logs |
+
+### System
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `GET` | `/api/health` | Health check |
+| `GET` | `/api/v1/health` | V1 health check |
 
 ---
 
-## GET /api/profiles
+## Updated Pagination Shape
 
-Supports combining any of the following query parameters:
-
-### Filters
-
-| Parameter | Type | Example |
-|-----------|------|---------|
-| `gender` | `male` \| `female` | `gender=male` |
-| `age_group` | `child` \| `teenager` \| `adult` \| `senior` | `age_group=adult` |
-| `country_id` | ISO 3166-1 alpha-2 | `country_id=NG` |
-| `min_age` | integer | `min_age=25` |
-| `max_age` | integer | `max_age=45` |
-| `min_gender_probability` | float 0–1 | `min_gender_probability=0.8` |
-| `min_country_probability` | float 0–1 | `min_country_probability=0.5` |
-
-### Sorting
-
-| Parameter | Values | Default |
-|-----------|--------|---------|
-| `sort_by` | `age` \| `created_at` \| `gender_probability` | `created_at` |
-| `order` | `asc` \| `desc` | `asc` |
-
-### Pagination
-
-| Parameter | Default | Max |
-|-----------|---------|-----|
-| `page` | `1` | — |
-| `limit` | `10` | `50` |
-
-### Example
-
-```
-GET /api/profiles?gender=male&country_id=NG&min_age=25&sort_by=age&order=desc&page=1&limit=10
+All paginated endpoints return:
+```json
+{
+  "status": "success",
+  "data": [...],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "total": 250,
+    "total_pages": 25,
+    "has_next": true,
+    "has_prev": false
+  }
+}
 ```
 
 ---
 
-## GET /api/profiles/search — Natural Language Query
+## Natural Language Search
 
-### How It Works
+The `/api/v1/profiles/search?q=<query>` endpoint parses plain English queries into structured database filters using **rule-based pattern matching** — no AI, no LLMs.
 
-The `/api/profiles/search?q=<query>` endpoint parses plain English queries into structured database filters using **rule-based pattern matching** — no AI, no LLMs.
-
-The query string is lowercased, then scanned for known keyword patterns using regular expressions. Each pattern maps to one or more database filter conditions.
-
-### Supported Keywords and Mappings
-
+### Supported Patterns
 | Query Pattern | Filter Applied |
 |---------------|----------------|
-| `male` / `males` / `men` / `man` | `gender = male` |
-| `female` / `females` / `women` / `woman` | `gender = female` |
+| `male` / `men` | `gender = male` |
+| `female` / `women` | `gender = female` |
 | `young` | `min_age = 16`, `max_age = 24` |
-| `child` / `children` | `age_group = child` |
-| `teenager` / `teenagers` / `teen` / `teens` | `age_group = teenager` |
-| `adult` / `adults` | `age_group = adult` |
-| `senior` / `seniors` / `elderly` / `old` | `age_group = senior` |
+| `child` / `teenager` / `adult` / `senior` | `age_group = <value>` |
 | `above X` / `older than X` / `over X` | `min_age = X` |
 | `below X` / `younger than X` / `under X` | `max_age = X` |
 | `between X and Y` | `min_age = X`, `max_age = Y` |
-| `aged X` / `age X` | `min_age = X`, `max_age = X` (exact) |
-| `from <country>` / `in <country>` | `country_id = <ISO code>` (looked up from ~80-country map) |
+| `from <country>` / `in <country>` | `country_id = <ISO code>` |
 
-### Example Queries
-
+### Example
 ```
-/api/profiles/search?q=young males from nigeria
+GET /api/v1/profiles/search?q=young males from nigeria
 → gender=male, min_age=16, max_age=24, country_id=NG
-
-/api/profiles/search?q=females above 30
-→ gender=female, min_age=30
-
-/api/profiles/search?q=adult males from kenya
-→ gender=male, age_group=adult, country_id=KE
-
-/api/profiles/search?q=male and female teenagers above 17
-→ age_group=teenager, min_age=17
-
-/api/profiles/search?q=people from angola
-→ country_id=AO
-
-/api/profiles/search?q=seniors in south africa
-→ age_group=senior, country_id=ZA
-
-/api/profiles/search?q=between 20 and 35
-→ min_age=20, max_age=35
 ```
-
-### Logic Flow
-
-1. Lowercase and trim the query string
-2. Detect gender keywords → set `gender` filter (if both male and female mentioned, gender filter is skipped)
-3. Detect `young` → set `min_age=16, max_age=24`
-4. Detect age group keywords → set `age_group` filter
-5. Detect `between X and Y` → set `min_age` and `max_age`
-6. Detect `aged X` → set exact age match
-7. Detect `above/older than/over X` → set `min_age`
-8. Detect `below/younger than/under X` → set `max_age`
-9. Detect `from/in <country name>` → look up ISO code from country map → set `country_id`
-10. If no filter was matched → return `{ "status": "error", "message": "Unable to interpret query" }`
-
-Pagination (`page`, `limit`) applies to all search results.
 
 ---
 
-## Limitations
+## CLI Usage
 
-The parser has the following known limitations:
+### Install
+```bash
+npm install -g insighta-cli
+```
 
-1. **Country name must match exactly** — fuzzy matching is not supported. `"Naija"` will not resolve to `NG`. Only standard English country names from a predefined map (~80 countries) are recognized.
+### Commands
+```bash
+insighta login              # Authenticate via GitHub OAuth (opens browser)
+insighta logout             # Clear stored credentials
+insighta whoami             # Show current user info
+insighta profiles list      # List profiles (supports --gender, --country, --page, --limit)
+insighta profiles search "young males from nigeria"
+insighta profiles get <id>  # Get single profile
+insighta profiles create <name>  # Create profile (admin only)
+insighta profiles delete <id>    # Delete profile (admin only)
+insighta export --format csv     # Export profiles as CSV
+```
 
-2. **`young` is not a stored age group** — it maps to ages 16–24 for query purposes only. Profiles in the database use `child`, `teenager`, `adult`, `senior`.
-
-3. **No negation support** — queries like `"not from Nigeria"` or `"males excluding seniors"` are not interpreted.
-
-4. **No OR logic across filters** — all conditions are ANDed. `"males or females from kenya"` becomes just `country_id=KE` (gender is skipped when both are mentioned).
-
-5. **No compound age words** — `"thirties"`, `"middle-aged"`, `"twenties"` are not recognized.
-
-6. **Single age group per query** — if both `teenager` and `adult` appear in the query, whichever was matched last wins.
-
-7. **No typo correction** — `"nigria"` or `"namiiba"` will not be resolved.
-
-8. **No context memory** — each query is stateless and parsed from scratch.
-
-9. **`from/in` must precede the country name** — `"south africa people"` will not match; it must be `"people from south africa"`.
-
-10. **No support for continent-level queries** — `"people from Africa"` or `"from West Africa"` will not resolve to any country filter.
+### Credential Storage
+Tokens are stored at `~/.insighta/credentials.json` with auto-refresh on expiry.
 
 ---
 
-## Error Responses
+## Rate Limiting
 
-All errors follow this format:
-```json
-{ "status": "error", "message": "<description>" }
-```
-
-| Status | Meaning |
-|--------|---------|
-| `400` | Missing or empty required parameter |
-| `404` | Profile not found |
-| `422` | Invalid parameter type or value |
-| `500` | Internal server error |
-
----
-
-## Database Schema
-
-```sql
-CREATE TABLE profiles (
-  id                  VARCHAR PRIMARY KEY,        -- UUID v7
-  name                VARCHAR UNIQUE NOT NULL,    -- Lowercase full name
-  gender              VARCHAR,                    -- 'male' or 'female'
-  gender_probability  FLOAT,
-  age                 INT,
-  age_group           VARCHAR,                    -- child | teenager | adult | senior
-  country_id          VARCHAR(2),                 -- ISO 3166-1 alpha-2 code
-  country_name        VARCHAR,
-  country_probability FLOAT,
-  created_at          TIMESTAMP DEFAULT NOW()
-);
-```
+| Scope | Limit |
+|-------|-------|
+| General API | 100 requests / 15 min per IP |
+| Auth endpoints | 20 requests / 15 min per IP |
 
 ---
 
@@ -188,3 +223,63 @@ CREATE TABLE profiles (
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string (Supabase) |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
+| `JWT_SECRET` | Secret for signing JWT access tokens |
+| `BACKEND_URL` | Backend URL (for OAuth callback) |
+| `WEB_PORTAL_URL` | Web portal URL (for CORS + redirect) |
+| `DEFAULT_ADMIN_GITHUB_ID` | GitHub user ID to auto-assign admin role |
+
+---
+
+## Database Schema
+
+```sql
+-- Profiles (Stage 2)
+CREATE TABLE profiles (
+  id                  VARCHAR PRIMARY KEY,
+  name                VARCHAR UNIQUE NOT NULL,
+  gender              VARCHAR,
+  gender_probability  FLOAT,
+  age                 INT,
+  age_group           VARCHAR,
+  country_id          VARCHAR(2),
+  country_name        VARCHAR,
+  country_probability FLOAT,
+  created_at          TIMESTAMP DEFAULT NOW()
+);
+
+-- Users (Stage 3)
+CREATE TABLE users (
+  id          VARCHAR PRIMARY KEY,
+  github_id   BIGINT UNIQUE NOT NULL,
+  username    VARCHAR NOT NULL,
+  email       VARCHAR,
+  avatar_url  VARCHAR,
+  role        VARCHAR DEFAULT 'analyst',
+  created_at  TIMESTAMP DEFAULT NOW(),
+  updated_at  TIMESTAMP DEFAULT NOW()
+);
+
+-- Refresh Tokens (Stage 3)
+CREATE TABLE refresh_tokens (
+  id          VARCHAR PRIMARY KEY,
+  user_id     VARCHAR NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  VARCHAR NOT NULL,
+  expires_at  TIMESTAMP NOT NULL,
+  created_at  TIMESTAMP DEFAULT NOW()
+);
+
+-- Request Logs (Stage 3)
+CREATE TABLE request_logs (
+  id            VARCHAR PRIMARY KEY,
+  user_id       VARCHAR,
+  method        VARCHAR NOT NULL,
+  path          VARCHAR NOT NULL,
+  status_code   INT,
+  response_time INT,
+  ip_address    VARCHAR,
+  user_agent    VARCHAR,
+  created_at    TIMESTAMP DEFAULT NOW()
+);
+```

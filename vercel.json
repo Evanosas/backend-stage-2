@@ -5,11 +5,16 @@
             "src": "api/index.js",
             "use": "@vercel/node",
             "config": {
-                "maxLambdaSize": "15mb"
+                "maxLambdaSize": "15mb",
+                "includeFiles": "api/**"
             }
         }
     ],
     "routes": [
+        {
+            "src": "/api/v1/(.*)",
+            "dest": "/api/index.js"
+        },
         {
             "src": "/api/(.*)",
             "dest": "/api/index.js"

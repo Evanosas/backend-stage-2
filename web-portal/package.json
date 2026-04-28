@@ -1,0 +1,11 @@
+{
+  "name": "insighta-web-portal",
+  "version": "1.0.0",
+  "description": "Web Portal for Insighta Labs+ Demographic Intelligence Platform",
+  "scripts": {
+    "dev": "npx -y serve .",
+    "start": "npx -y serve ."
+  },
+  "keywords": [],
+  "license": "ISC"
+}

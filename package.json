@@ -1,10 +1,12 @@
 {
-  "name": "backend-stage1-vercel",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "insighta-labs-backend",
+  "version": "2.0.0",
+  "main": "api/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node api/index.js"
+    "start": "node api/index.js",
+    "migrate": "node migrate.js",
+    "seed": "node seed.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
     "node": "24.x"
@@ -12,11 +14,14 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Insighta Labs+ — Secure Demographic Intelligence API with GitHub OAuth, RBAC, and multi-interface support",
   "dependencies": {
     "axios": "^1.15.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "express": "^4.22.1",
+    "express-rate-limit": "^8.4.1",
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.20.0",
     "uuid": "^13.0.0"
   }
