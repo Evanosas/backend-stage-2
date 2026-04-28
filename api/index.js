@@ -40,26 +40,26 @@ app.use(express.json());
 app.use(cookieParser());
 
 // ─── Database-backed Rate Limiting ──────────────────────────────────────────
-// In-memory rate limiting doesn't work on Vercel serverless (each request = new instance)
-// Use a simple counter object that persists within the same warm instance
+// In-memory rate limiting that works within warm Vercel instances
 const rateLimitStore = {};
 
-function customRateLimiter(maxRequests, windowMs) {
+function customRateLimiter(prefix, maxRequests, windowMs) {
     return (req, res, next) => {
-        const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+        const ip = req.ip || req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || 'unknown';
+        const key = `${prefix}:${ip}`;
         const now = Date.now();
         if (!rateLimitStore[key] || rateLimitStore[key].resetAt < now) {
             rateLimitStore[key] = { count: 1, resetAt: now + windowMs };
         } else {
             rateLimitStore[key].count++;
         }
-        // Set standard rate limit headers
         const remaining = Math.max(0, maxRequests - rateLimitStore[key].count);
-        res.setHeader('RateLimit-Limit', maxRequests);
-        res.setHeader('RateLimit-Remaining', remaining);
-        res.setHeader('RateLimit-Reset', Math.ceil(rateLimitStore[key].resetAt / 1000));
-        res.setHeader('X-RateLimit-Limit', maxRequests);
-        res.setHeader('X-RateLimit-Remaining', remaining);
+        res.setHeader('RateLimit-Limit', String(maxRequests));
+        res.setHeader('RateLimit-Remaining', String(remaining));
+        res.setHeader('RateLimit-Reset', String(Math.ceil(rateLimitStore[key].resetAt / 1000)));
+        res.setHeader('X-RateLimit-Limit', String(maxRequests));
+        res.setHeader('X-RateLimit-Remaining', String(remaining));
+        res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
 
         if (rateLimitStore[key].count > maxRequests) {
             return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
@@ -68,10 +68,11 @@ function customRateLimiter(maxRequests, windowMs) {
     };
 }
 
-const authLimiter = customRateLimiter(10, 15 * 60 * 1000);
-const generalLimiter = customRateLimiter(100, 15 * 60 * 1000);
+// Auth: 10 requests per 1 minute window
+const authLimiter = customRateLimiter('auth', 10, 60 * 1000);
+const generalLimiter = customRateLimiter('general', 100, 15 * 60 * 1000);
 
-// Apply rate limiters to both /api/v1/auth and /auth paths
+// Apply rate limiters
 app.use('/api/v1/auth', authLimiter);
 app.use('/auth', authLimiter);
 app.use('/api/v1', generalLimiter);
