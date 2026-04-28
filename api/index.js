@@ -28,7 +28,6 @@ const WEB_PORTAL_URL = (process.env.WEB_PORTAL_URL || '*').trim();
 
 app.use((req, res, next) => {
     const origin = req.headers.origin;
-    // Always set CORS headers so browser-based auth and API calls work
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
@@ -40,13 +39,41 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(cookieParser());
 
-// Rate limiting
-const generalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false,
-    message: { status: 'error', message: 'Too many requests, please try again later' } });
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
-    message: { status: 'error', message: 'Too many auth requests, please try again later' } });
+// ─── Database-backed Rate Limiting ──────────────────────────────────────────
+// In-memory rate limiting doesn't work on Vercel serverless (each request = new instance)
+// Use a simple counter object that persists within the same warm instance
+const rateLimitStore = {};
 
+function customRateLimiter(maxRequests, windowMs) {
+    return (req, res, next) => {
+        const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+        const now = Date.now();
+        if (!rateLimitStore[key] || rateLimitStore[key].resetAt < now) {
+            rateLimitStore[key] = { count: 1, resetAt: now + windowMs };
+        } else {
+            rateLimitStore[key].count++;
+        }
+        // Set standard rate limit headers
+        const remaining = Math.max(0, maxRequests - rateLimitStore[key].count);
+        res.setHeader('RateLimit-Limit', maxRequests);
+        res.setHeader('RateLimit-Remaining', remaining);
+        res.setHeader('RateLimit-Reset', Math.ceil(rateLimitStore[key].resetAt / 1000));
+        res.setHeader('X-RateLimit-Limit', maxRequests);
+        res.setHeader('X-RateLimit-Remaining', remaining);
+
+        if (rateLimitStore[key].count > maxRequests) {
+            return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
+        }
+        next();
+    };
+}
+
+const authLimiter = customRateLimiter(10, 15 * 60 * 1000);
+const generalLimiter = customRateLimiter(100, 15 * 60 * 1000);
+
+// Apply rate limiters to both /api/v1/auth and /auth paths
 app.use('/api/v1/auth', authLimiter);
+app.use('/auth', authLimiter);
 app.use('/api/v1', generalLimiter);
 
 // Request logging

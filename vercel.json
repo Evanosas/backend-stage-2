@@ -12,6 +12,14 @@
     ],
     "routes": [
         {
+            "src": "/auth/(.*)",
+            "dest": "/api/index.js"
+        },
+        {
+            "src": "/users/(.*)",
+            "dest": "/api/index.js"
+        },
+        {
             "src": "/api/v1/(.*)",
             "dest": "/api/index.js"
         },
