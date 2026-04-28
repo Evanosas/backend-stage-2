@@ -24,14 +24,12 @@ try {
 } catch (e) { console.error('Pool init error:', e.message); }
 
 // ─── Global Middleware ───────────────────────────────────────────────────────
-const WEB_PORTAL_URL = process.env.WEB_PORTAL_URL || '*';
+const WEB_PORTAL_URL = (process.env.WEB_PORTAL_URL || '*').trim();
 
 app.use((req, res, next) => {
     const origin = req.headers.origin;
-    const allowed = WEB_PORTAL_URL === '*' ? '*' : WEB_PORTAL_URL;
-    if (allowed === '*' || origin === allowed) {
-        res.setHeader('Access-Control-Allow-Origin', origin || '*');
-    }
+    // Always set CORS headers so browser-based auth and API calls work
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -45,7 +43,7 @@ app.use(cookieParser());
 // Rate limiting
 const generalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false,
     message: { status: 'error', message: 'Too many requests, please try again later' } });
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false,
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
     message: { status: 'error', message: 'Too many auth requests, please try again later' } });
 
 app.use('/api/v1/auth', authLimiter);

@@ -4,11 +4,11 @@ const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const { uuidv7, JWT_SECRET } = require('./middleware');
 
-const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
-const BACKEND_URL = process.env.BACKEND_URL || 'https://backendstage1-api.vercel.app';
-const WEB_PORTAL_URL = process.env.WEB_PORTAL_URL || 'http://localhost:5173';
-const DEFAULT_ADMIN_GITHUB_ID = process.env.DEFAULT_ADMIN_GITHUB_ID;
+const GITHUB_CLIENT_ID = (process.env.GITHUB_CLIENT_ID || '').trim();
+const GITHUB_CLIENT_SECRET = (process.env.GITHUB_CLIENT_SECRET || '').trim();
+const BACKEND_URL = (process.env.BACKEND_URL || 'https://backendstage1-api.vercel.app').trim();
+const WEB_PORTAL_URL = (process.env.WEB_PORTAL_URL || 'http://localhost:5173').trim();
+const DEFAULT_ADMIN_GITHUB_ID = (process.env.DEFAULT_ADMIN_GITHUB_ID || '').trim();
 
 // In-memory PKCE store (per state param). For Vercel serverless, we pass verifier via state encoding.
 const pendingStates = new Map();
@@ -84,8 +84,11 @@ function registerAuthRoutes(app, pool) {
     app.get('/api/v1/auth/github/callback', async (req, res) => {
         try {
             const { code, state } = req.query;
-            if (!code || !state) {
-                return res.status(400).json({ status: 'error', message: 'Missing code or state' });
+            if (!code) {
+                return res.status(400).json({ status: 'error', message: 'Missing code parameter' });
+            }
+            if (!state) {
+                return res.status(400).json({ status: 'error', message: 'Missing state parameter' });
             }
 
             // Decode state
@@ -208,6 +211,11 @@ function registerAuthRoutes(app, pool) {
         }
     });
 
+    // Enforce POST on /refresh
+    app.get('/api/v1/auth/refresh', (req, res) => {
+        return res.status(405).json({ status: 'error', message: 'Method not allowed. Use POST.' });
+    });
+
     // POST /api/v1/auth/refresh — Refresh access token
     app.post('/api/v1/auth/refresh', async (req, res) => {
         try {
@@ -278,6 +286,11 @@ function registerAuthRoutes(app, pool) {
         }
     });
 
+    // Enforce POST on /logout
+    app.get('/api/v1/auth/logout', (req, res) => {
+        return res.status(405).json({ status: 'error', message: 'Method not allowed. Use POST.' });
+    });
+
     // POST /api/v1/auth/logout
     app.post('/api/v1/auth/logout', async (req, res) => {
         try {
@@ -323,6 +336,23 @@ function registerAuthRoutes(app, pool) {
         } catch (error) {
             res.status(500).json({ status: 'error', message: 'Internal server error' });
         }
+    });
+
+    // Alias: /api/v1/users/me → same as /api/v1/auth/me
+    app.get('/api/v1/users/me', async (req, res) => {
+        try {
+            let token = null;
+            const authHeader = req.headers.authorization;
+            if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.substring(7);
+            if (!token && req.cookies) token = req.cookies.access_token;
+            if (!token) return res.status(401).json({ status: 'error', message: 'Authentication required' });
+            let decoded;
+            try { decoded = jwt.verify(token, JWT_SECRET); }
+            catch { return res.status(401).json({ status: 'error', message: 'Invalid token' }); }
+            const result = await pool.query('SELECT id, github_id, username, email, avatar_url, role, created_at FROM users WHERE id = $1', [decoded.userId]);
+            if (result.rows.length === 0) return res.status(404).json({ status: 'error', message: 'User not found' });
+            res.json({ status: 'success', data: result.rows[0] });
+        } catch (error) { res.status(500).json({ status: 'error', message: 'Internal server error' }); }
     });
 }
 
