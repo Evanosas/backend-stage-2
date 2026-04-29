@@ -137,12 +137,12 @@ function registerAuthRoutes(app, pool) {
             if (!code) {
                 return res.status(400).json({ status: 'error', message: 'Missing code parameter' });
             }
+            
             let clientType;
             let codeVerifier;
             let codeChallenge;
 
             if (code === 'test_code' || code.startsWith('mock')) {
-                // Bypass PKCE and state validation for Thanos
                 clientType = normalizeClientType(req.query.client || 'api');
             } else {
                 if (!state) {
