@@ -118,7 +118,11 @@ const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
 // Everything else under /api/v1 gets general rate limiting (100 req/15min)
 // IMPORTANT: auth routes are excluded from general limiter to avoid double-counting
 app.use((req, res, next) => {
-    const path = req.path;
+    let path = req.path;
+    if (path.length > 1 && path.endsWith('/')) {
+        path = path.slice(0, -1);
+    }
+    
     // Auth github endpoints get auth-specific rate limiting
     if (path === '/auth/github' || path === '/api/v1/auth/github') {
         return authGithubLimiter(req, res, next);
