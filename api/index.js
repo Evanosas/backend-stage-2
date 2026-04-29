@@ -90,13 +90,13 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
     };
 }
 
-// Auth: 10 requests per 1 minute window
-const authLimiter = dbRateLimiter('auth', 10, 60 * 1000);
+// Auth: 10 requests per 1 minute window (path-specific so different auth endpoints don't share counters)
+const authGithubLimiter = dbRateLimiter('auth_github', 10, 60 * 1000);
 const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
 
-// Apply rate limiters
-app.use('/api/v1/auth', authLimiter);
-app.use('/auth', authLimiter);
+// Apply rate limiters — only the GitHub auth initiation endpoint is rate-limited
+app.use('/api/v1/auth/github', authGithubLimiter);
+app.use('/auth/github', authGithubLimiter);
 app.use('/api/v1', generalLimiter);
 
 // Request logging
