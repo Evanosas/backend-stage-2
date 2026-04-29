@@ -37,7 +37,6 @@ app.use(express.json());
 app.use(cookieParser());
 
 // ─── Database-backed Rate Limiting ──────────────────────────────────────────
-// Uses PostgreSQL to persist counters across serverless invocations
 async function ensureRateLimitTable() {
     if (!pool) return;
     try {
@@ -57,12 +56,10 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
         if (!pool) return next();
         const ip = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || 'unknown';
         const key = `${prefix}:${ip.split(',')[0].trim()}`;
-        const now = new Date();
-        const resetAt = new Date(now.getTime() + windowMs);
 
         try {
-            // Cleanup expired entries and upsert
             await pool.query(`DELETE FROM rate_limits WHERE reset_at < NOW()`);
+            const resetAt = new Date(Date.now() + windowMs);
             const result = await pool.query(
                 `INSERT INTO rate_limits (key, count, reset_at) VALUES ($1, 1, $2)
                  ON CONFLICT (key) DO UPDATE SET count = rate_limits.count + 1
@@ -83,21 +80,32 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
                 return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
             }
         } catch (e) {
-            // If rate limiting fails, let request through
             console.error('Rate limit error:', e.message);
         }
         next();
     };
 }
 
-// Auth: 10 requests per 1 minute window (path-specific so different auth endpoints don't share counters)
 const authGithubLimiter = dbRateLimiter('auth_github', 10, 60 * 1000);
 const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
 
-// Apply rate limiters — only the GitHub auth initiation endpoint is rate-limited
-app.use('/api/v1/auth/github', authGithubLimiter);
-app.use('/auth/github', authGithubLimiter);
-app.use('/api/v1', generalLimiter);
+// Apply rate limiters ONLY to specific exact routes
+// /auth/github and /api/v1/auth/github get auth rate limiting (10 req/min)
+// Everything else under /api/v1 gets general rate limiting (100 req/15min)
+// IMPORTANT: auth routes are excluded from general limiter to avoid double-counting
+app.use((req, res, next) => {
+    const path = req.path;
+    // Auth github endpoints get auth-specific rate limiting
+    if (path === '/auth/github' || path === '/api/v1/auth/github') {
+        return authGithubLimiter(req, res, next);
+    }
+    // Other /api/v1 endpoints get general rate limiting (but NOT auth sub-routes)
+    if (path.startsWith('/api/v1') && !path.startsWith('/api/v1/auth')) {
+        return generalLimiter(req, res, next);
+    }
+    // All other routes (auth callback, refresh, logout, etc.) — no rate limiting
+    next();
+});
 
 // Request logging
 if (pool) app.use(requestLogger(pool));
@@ -130,7 +138,7 @@ app.get('/api/v1/health', async (req, res) => {
     } catch (e) { res.status(500).json({ status: 'error', db: 'disconnected', message: e.message }); }
 });
 
-// ─── Backward Compat: /api/profiles → /api/v1/profiles ──────────────────────
+// ─── Backward Compat ─────────────────────────────────────────────────────────
 app.use('/api/profiles', (req, res) => {
     const newUrl = req.originalUrl.replace('/api/profiles', '/api/v1/profiles');
     res.redirect(307, newUrl);
