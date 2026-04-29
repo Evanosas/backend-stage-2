@@ -63,6 +63,16 @@ async function migrate() {
         `);
         console.log('  ✅ request_logs table ready');
 
+        // Rate limits (for DB-backed rate limiting on serverless)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS rate_limits (
+                key             TEXT PRIMARY KEY,
+                count           INTEGER DEFAULT 1,
+                reset_at        TIMESTAMPTZ NOT NULL
+            )
+        `);
+        console.log('  ✅ rate_limits table ready');
+
         // Indexes
         await client.query(`CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)`);

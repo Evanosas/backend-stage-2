@@ -1,6 +1,5 @@
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const rateLimit = require('express-rate-limit');
 const { Pool } = require('pg');
 const { requestLogger, csrfProtection } = require('./middleware');
 const { registerAuthRoutes } = require('./auth');
@@ -17,15 +16,13 @@ try {
             host: url.hostname, port: parseInt(url.port) || 5432,
             user: decodeURIComponent(url.username), password: decodeURIComponent(url.password),
             database: url.pathname.replace('/', ''),
-            ssl: { rejectUnauthorized: false }, max: 1,
+            ssl: { rejectUnauthorized: false }, max: 3,
             idleTimeoutMillis: 10000, connectionTimeoutMillis: 10000,
         });
     } else { console.error('DATABASE_URL is not set'); }
 } catch (e) { console.error('Pool init error:', e.message); }
 
 // ─── Global Middleware ───────────────────────────────────────────────────────
-const WEB_PORTAL_URL = (process.env.WEB_PORTAL_URL || '*').trim();
-
 app.use((req, res, next) => {
     const origin = req.headers.origin;
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
@@ -40,37 +37,62 @@ app.use(express.json());
 app.use(cookieParser());
 
 // ─── Database-backed Rate Limiting ──────────────────────────────────────────
-// In-memory rate limiting that works within warm Vercel instances
-const rateLimitStore = {};
+// Uses PostgreSQL to persist counters across serverless invocations
+async function ensureRateLimitTable() {
+    if (!pool) return;
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS rate_limits (
+                key TEXT PRIMARY KEY,
+                count INTEGER DEFAULT 1,
+                reset_at TIMESTAMPTZ NOT NULL
+            )
+        `);
+    } catch (e) { console.error('Rate limit table error:', e.message); }
+}
+ensureRateLimitTable();
 
-function customRateLimiter(prefix, maxRequests, windowMs) {
-    return (req, res, next) => {
-        const ip = req.ip || req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || 'unknown';
-        const key = `${prefix}:${ip}`;
-        const now = Date.now();
-        if (!rateLimitStore[key] || rateLimitStore[key].resetAt < now) {
-            rateLimitStore[key] = { count: 1, resetAt: now + windowMs };
-        } else {
-            rateLimitStore[key].count++;
-        }
-        const remaining = Math.max(0, maxRequests - rateLimitStore[key].count);
-        res.setHeader('RateLimit-Limit', String(maxRequests));
-        res.setHeader('RateLimit-Remaining', String(remaining));
-        res.setHeader('RateLimit-Reset', String(Math.ceil(rateLimitStore[key].resetAt / 1000)));
-        res.setHeader('X-RateLimit-Limit', String(maxRequests));
-        res.setHeader('X-RateLimit-Remaining', String(remaining));
-        res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
+function dbRateLimiter(prefix, maxRequests, windowMs) {
+    return async (req, res, next) => {
+        if (!pool) return next();
+        const ip = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || 'unknown';
+        const key = `${prefix}:${ip.split(',')[0].trim()}`;
+        const now = new Date();
+        const resetAt = new Date(now.getTime() + windowMs);
 
-        if (rateLimitStore[key].count > maxRequests) {
-            return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
+        try {
+            // Cleanup expired entries and upsert
+            await pool.query(`DELETE FROM rate_limits WHERE reset_at < NOW()`);
+            const result = await pool.query(
+                `INSERT INTO rate_limits (key, count, reset_at) VALUES ($1, 1, $2)
+                 ON CONFLICT (key) DO UPDATE SET count = rate_limits.count + 1
+                 RETURNING count, reset_at`,
+                [key, resetAt]
+            );
+            const { count, reset_at } = result.rows[0];
+            const remaining = Math.max(0, maxRequests - count);
+
+            res.setHeader('RateLimit-Limit', String(maxRequests));
+            res.setHeader('RateLimit-Remaining', String(remaining));
+            res.setHeader('RateLimit-Reset', String(Math.ceil(new Date(reset_at).getTime() / 1000)));
+            res.setHeader('X-RateLimit-Limit', String(maxRequests));
+            res.setHeader('X-RateLimit-Remaining', String(remaining));
+            res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
+
+            if (count > maxRequests) {
+                return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
+            }
+        } catch (e) {
+            // If rate limiting fails, let request through
+            console.error('Rate limit error:', e.message);
         }
         next();
     };
 }
 
 // Auth: 10 requests per 1 minute window
-const authLimiter = customRateLimiter('auth', 10, 60 * 1000);
-const generalLimiter = customRateLimiter('general', 100, 15 * 60 * 1000);
+const authLimiter = dbRateLimiter('auth', 10, 60 * 1000);
+const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
 
 // Apply rate limiters
 app.use('/api/v1/auth', authLimiter);
