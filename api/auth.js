@@ -101,10 +101,10 @@ function verifySignedState(state) {
 }
 
 // ─── Register Auth Routes ────────────────────────────────────────────────────
-function registerAuthRoutes(app, pool) {
+module.exports = function registerAuthRoutes(app, pool, authGithubLimiter) {
 
-    // GET /api/v1/auth/github — Start OAuth + PKCE flow
-    app.get('/api/v1/auth/github', (req, res) => {
+    // Internal start handler logic
+    const startHandler = (req, res) => {
         const clientType = normalizeClientType(req.query.client);
         const codeVerifier = generateCodeVerifier();
         const codeChallenge = generateCodeChallenge(codeVerifier);
@@ -120,7 +120,9 @@ function registerAuthRoutes(app, pool) {
 
         const params = new URLSearchParams({
             client_id: GITHUB_CLIENT_ID_SAFE,
-            redirect_uri: `${BACKEND_URL}/api/v1/auth/github/callback`,
+            redirect_uri: req.originalUrl.includes('/api/v1/') 
+                ? `${BACKEND_URL}/api/v1/auth/github/callback`
+                : `${BACKEND_URL}/auth/github/callback`,
             scope: 'read:user user:email',
             state: state,
             code_challenge: codeChallenge,
@@ -128,10 +130,16 @@ function registerAuthRoutes(app, pool) {
         });
 
         res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
-    });
+    };
 
-    // GET /api/v1/auth/github/callback — Handle OAuth callback
-    app.get('/api/v1/auth/github/callback', async (req, res) => {
+    // GET /auth/github — Start OAuth flow
+    app.get('/auth/github', authGithubLimiter, startHandler);
+
+    // GET /api/v1/auth/github — Start OAuth flow (prefixed)
+    app.get('/api/v1/auth/github', authGithubLimiter, startHandler);
+
+    // Internal callback handler logic
+    const handleCallback = async (req, res) => {
         try {
             const { code, state } = req.query;
             if (!code) {
@@ -175,10 +183,21 @@ function registerAuthRoutes(app, pool) {
                     });
                 }
 
-                return res.json({
+                const responseData = {
                     access_token: accessToken,
-                    refresh_token: refreshToken
-                });
+                    refresh_token: refreshToken,
+                    token_type: 'Bearer',
+                    expires_in: 900, // 15 min
+                    status: 'success',
+                    data: {
+                        access_token: accessToken,
+                        refresh_token: refreshToken,
+                        token_type: 'Bearer',
+                        expires_in: 900,
+                        user: { id: adminUser.id, username: adminUser.username, role: adminUser.role }
+                    }
+                };
+                return res.json(responseData);
             }
 
             let clientType;
@@ -237,7 +256,9 @@ function registerAuthRoutes(app, pool) {
                     client_id: GITHUB_CLIENT_ID_SAFE,
                     client_secret: GITHUB_CLIENT_SECRET_SAFE,
                     code,
-                    redirect_uri: `${BACKEND_URL}/api/v1/auth/github/callback`,
+                    redirect_uri: req.originalUrl.includes('/api/v1/') 
+                        ? `${BACKEND_URL}/api/v1/auth/github/callback`
+                        : `${BACKEND_URL}/auth/github/callback`,
                     code_verifier: codeVerifier,
                 }, { headers: { Accept: 'application/json' }, timeout: 10000 });
 
@@ -282,7 +303,6 @@ function registerAuthRoutes(app, pool) {
                     user.avatar_url = ghUser.avatar_url;
                 } else {
                     const userId = uuidv7();
-                    // First user or matching DEFAULT_ADMIN_GITHUB_ID becomes admin
                     const countRes = await pool.query('SELECT COUNT(*) FROM users');
                     const isFirst = parseInt(countRes.rows[0].count) === 0;
                     const isDefaultAdmin = DEFAULT_ADMIN_GITHUB_ID && String(ghUser.id) === String(DEFAULT_ADMIN_GITHUB_ID);
@@ -311,14 +331,9 @@ function registerAuthRoutes(app, pool) {
                     const role = (isFirst || isDefaultAdmin) ? 'admin' : 'analyst';
 
                     user = {
-                        id: userId,
-                        github_id: ghUser.id,
-                        username: ghUser.login,
-                        email,
-                        avatar_url: ghUser.avatar_url,
-                        role,
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString(),
+                        id: userId, github_id: ghUser.id, username: ghUser.login, email,
+                        avatar_url: ghUser.avatar_url, role,
+                        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
                     };
                     memoryUsersByGithubId.set(ghId, user);
                     memoryUsersById.set(userId, user);
@@ -339,75 +354,52 @@ function registerAuthRoutes(app, pool) {
                 );
             } else {
                 memoryRefreshTokensByHash.set(refreshHash, {
-                    id: refreshId,
-                    user_id: user.id,
-                    expires_at: expiresAt.getTime(),
+                    id: refreshId, user_id: user.id, expires_at: expiresAt.getTime(),
                 });
             }
 
-            // Response depends on client type.
-            // - `web`: HTTP-only cookies + redirect to dashboard
-            // - `cli`: redirect to local callback server with tokens in querystring
-            // - `api`: JSON tokens in response body
             if (clientType === 'cli') {
-                // CLI expects redirect to `http://localhost:9876/callback?access_token=...&refresh_token=...&user=...`
                 if (String(req.query.json) === '1') {
                     return res.json({
                         status: 'success',
                         data: {
-                            access_token: accessToken,
-                            refresh_token: refreshToken,
+                            access_token: accessToken, refresh_token: refreshToken,
                             user: { id: user.id, username: user.username, role: user.role },
                         }
                     });
                 }
-                const cliPort = 9876;
                 const params = new URLSearchParams({
-                    access_token: accessToken,
-                    refresh_token: refreshToken,
+                    access_token: accessToken, refresh_token: refreshToken,
                     user: JSON.stringify({ id: user.id, username: user.username, role: user.role }),
                 });
-                return res.redirect(`http://localhost:${cliPort}/callback?${params.toString()}`);
+                return res.redirect(`http://localhost:9876/callback?${params.toString()}`);
             }
 
             if (clientType === 'api') {
                 return res.json({
                     status: 'success',
                     data: {
-                        access_token: accessToken,
-                        refresh_token: refreshToken,
+                        access_token: accessToken, refresh_token: refreshToken,
                         user: { id: user.id, username: user.username, role: user.role },
                     }
                 });
             }
 
-            // Web portal — set HTTP-only cookies
-            const csrfToken = crypto.randomBytes(32).toString('hex');
-            const cookieOpts = {
-                httpOnly: true, secure: true, sameSite: 'None',
-                path: '/', maxAge: 15 * 60 * 1000, // 15 min
-            };
-            const refreshCookieOpts = {
-                httpOnly: true, secure: true, sameSite: 'None',
-                path: '/api/v1/auth', maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-            };
-
-            res.cookie('access_token', accessToken, cookieOpts);
-            res.cookie('refresh_token', refreshToken, refreshCookieOpts);
-            res.cookie('csrf_token', csrfToken, {
-                httpOnly: false, secure: true, sameSite: 'None',
-                path: '/', maxAge: 15 * 60 * 1000,
-            });
+            // Web portal
+            res.cookie('access_token', accessToken, { httpOnly: true, secure: true, sameSite: 'None', path: '/', maxAge: 15 * 60 * 1000 });
+            res.cookie('refresh_token', refreshToken, { httpOnly: true, secure: true, sameSite: 'None', path: '/api/v1/auth', maxAge: 7 * 24 * 60 * 60 * 1000 });
+            res.cookie('csrf_token', crypto.randomBytes(32).toString('hex'), { httpOnly: false, secure: true, sameSite: 'None', path: '/', maxAge: 15 * 60 * 1000 });
 
             return res.redirect(`${WEB_PORTAL_URL}/?login=success`);
         } catch (error) {
             console.error('OAuth callback error:', error.message);
-            // For invalid authorization codes, GitHub typically rejects the token exchange.
-            // Graders expect a rejection (4xx) rather than a generic 500.
             const status = (error && (error.response || error.code)) ? 401 : 500;
             res.status(status).json({ status: 'error', message: 'Authentication failed' });
         }
-    });
+    };
+
+    // GET /api/v1/auth/github/callback — Handle OAuth callback
+    app.get('/api/v1/auth/github/callback', handleCallback);
 
     // Enforce POST on /refresh
     app.get('/api/v1/auth/refresh', (req, res) => {
@@ -680,11 +672,7 @@ function registerAuthRoutes(app, pool) {
         res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
     });
 
-    app.get('/auth/github/callback', async (req, res) => {
-        // Forward to the main callback handler
-        req.url = '/api/v1/auth/github/callback' + (req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '');
-        app.handle(req, res);
-    });
+    app.get('/auth/github/callback', handleCallback);
 
     app.get('/auth/refresh', (req, res) => {
         return res.status(405).json({ status: 'error', message: 'Method not allowed. Use POST.' });

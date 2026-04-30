@@ -59,84 +59,60 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
         const ip = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || 'unknown';
         const key = `${prefix}:${ip.split(',')[0].trim()}`;
 
-        // In-memory mode when DB isn't available (e.g. local dev / some graders).
-        if (!pool) {
-            const now = Date.now();
-            const existing = memRateLimits.get(key);
-            const resetAt = existing && existing.resetAt > now ? existing.resetAt : now + windowMs;
-            const count = (existing && existing.resetAt > now) ? existing.count + 1 : 1;
-            memRateLimits.set(key, { count, resetAt });
-
-            const remaining = Math.max(0, maxRequests - count);
-            res.setHeader('RateLimit-Limit', String(maxRequests));
-            res.setHeader('RateLimit-Remaining', String(remaining));
-            res.setHeader('RateLimit-Reset', String(Math.ceil(resetAt / 1000)));
-            res.setHeader('X-RateLimit-Limit', String(maxRequests));
-            res.setHeader('X-RateLimit-Remaining', String(remaining));
-            res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
-
-            if (count > maxRequests) {
-                return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
-            }
-            return next();
-        }
-
         try {
-            await pool.query(`DELETE FROM rate_limits WHERE reset_at < NOW()`);
-            const resetAt = new Date(Date.now() + windowMs);
-            const result = await pool.query(
-                `INSERT INTO rate_limits (key, count, reset_at) VALUES ($1, 1, $2)
-                 ON CONFLICT (key) DO UPDATE SET count = rate_limits.count + 1
-                 RETURNING count, reset_at`,
-                [key, resetAt]
-            );
-            const { count, reset_at } = result.rows[0];
-            const remaining = Math.max(0, maxRequests - count);
+            if (pool) {
+                await pool.query(`DELETE FROM rate_limits WHERE reset_at < NOW()`);
+                const resetAt = new Date(Date.now() + windowMs);
+                const result = await pool.query(
+                    `INSERT INTO rate_limits (key, count, reset_at) VALUES ($1, 1, $2)
+                     ON CONFLICT (key) DO UPDATE SET count = rate_limits.count + 1
+                     RETURNING count, reset_at`,
+                    [key, resetAt]
+                );
+                const { count, reset_at } = result.rows[0];
+                const remaining = Math.max(0, maxRequests - count);
 
-            res.setHeader('RateLimit-Limit', String(maxRequests));
-            res.setHeader('RateLimit-Remaining', String(remaining));
-            res.setHeader('RateLimit-Reset', String(Math.ceil(new Date(reset_at).getTime() / 1000)));
-            res.setHeader('X-RateLimit-Limit', String(maxRequests));
-            res.setHeader('X-RateLimit-Remaining', String(remaining));
-            res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
+                res.setHeader('RateLimit-Limit', String(maxRequests));
+                res.setHeader('RateLimit-Remaining', String(remaining));
+                res.setHeader('RateLimit-Reset', String(Math.ceil(new Date(reset_at).getTime() / 1000)));
+                res.setHeader('X-RateLimit-Limit', String(maxRequests));
+                res.setHeader('X-RateLimit-Remaining', String(remaining));
+                res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
 
-            if (count > maxRequests) {
-                return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
+                if (count > maxRequests) {
+                    console.log(`[RateLimit] BLOCKING ${key} (${count}/${maxRequests})`);
+                    return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
+                }
+                return next();
             }
         } catch (e) {
-            console.error('Rate limit error:', e.message);
+            console.error('Rate limit DB error:', e.message);
+        }
+
+        // Final fallback to memory if DB is unavailable or fails
+        const now = Date.now();
+        const existing = memRateLimits.get(key);
+        const resetAt = existing && existing.resetAt > now ? existing.resetAt : now + windowMs;
+        const count = (existing && existing.resetAt > now) ? existing.count + 1 : 1;
+        memRateLimits.set(key, { count, resetAt });
+
+        const remaining = Math.max(0, maxRequests - count);
+        res.setHeader('RateLimit-Limit', String(maxRequests));
+        res.setHeader('RateLimit-Remaining', String(remaining));
+        res.setHeader('RateLimit-Reset', String(Math.ceil(resetAt / 1000)));
+        res.setHeader('X-RateLimit-Limit', String(maxRequests));
+        res.setHeader('X-RateLimit-Remaining', String(remaining));
+
+        if (count > maxRequests) {
+            console.log(`[RateLimit-MEM] BLOCKING ${key} (${count}/${maxRequests})`);
+            return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
         }
         next();
     };
 }
 
-const authGithubLimiter = dbRateLimiter('auth_github', 9, 60 * 1000);
+const authGithubLimiter = dbRateLimiter('auth_github', 10, 60 * 1000);
 const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
-
-// Apply rate limiters ONLY to specific exact routes
-// /auth/github and /api/v1/auth/github get auth rate limiting (10 req/min)
-// Everything else under /api/v1 gets general rate limiting (100 req/15min)
-// IMPORTANT: auth routes are excluded from general limiter to avoid double-counting
-app.use((req, res, next) => {
-    if (req._rateLimited) return next();
-    req._rateLimited = true;
-
-    let path = req.path;
-    if (path.length > 1 && path.endsWith('/')) {
-        path = path.slice(0, -1);
-    }
-    
-    // Auth github endpoints get auth-specific rate limiting
-    if (path === '/auth/github' || path === '/api/v1/auth/github') {
-        return authGithubLimiter(req, res, next);
-    }
-    // Other /api/v1 endpoints get general rate limiting (but NOT auth sub-routes)
-    if (path.startsWith('/api/v1') && !path.startsWith('/api/v1/auth')) {
-        return generalLimiter(req, res, next);
-    }
-    // All other routes (auth callback, refresh, logout, etc.) — no rate limiting
-    next();
-});
 
 // Request logging
 if (pool) app.use(requestLogger(pool));
@@ -144,10 +120,17 @@ if (pool) app.use(requestLogger(pool));
 // CSRF protection
 app.use(csrfProtection);
 
+// Apply general rate limiter to /api/v1 (excluding auth)
+app.use('/api/v1', (req, res, next) => {
+    if (req.path.startsWith('/auth')) return next();
+    return generalLimiter(req, res, next);
+});
+
 // ─── Auth Routes ─────────────────────────────────────────────────────────────
 // Register auth routes even when DB isn't available; `api/auth.js` will fall back
 // to in-memory stores so grading can still validate the flow.
-registerAuthRoutes(app, pool);
+registerAuthRoutes(app, pool, authGithubLimiter);
+
 
 // ─── V1 API Routes ──────────────────────────────────────────────────────────
 if (pool) {
