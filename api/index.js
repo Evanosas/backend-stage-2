@@ -111,7 +111,7 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
     };
 }
 
-const authGithubLimiter = dbRateLimiter('auth_github', 12, 60 * 1000);
+const authGithubLimiter = dbRateLimiter('auth_github', 10, 60 * 1000);
 const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
 
 // Request logging
