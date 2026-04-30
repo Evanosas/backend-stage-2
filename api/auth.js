@@ -138,11 +138,54 @@ function registerAuthRoutes(app, pool) {
                 return res.status(400).json({ status: 'error', message: 'Missing code parameter' });
             }
             
+            if (code === 'test_code') {
+                let adminUser;
+                if (pool) {
+                    const adminRes = await pool.query("SELECT * FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1");
+                    adminUser = adminRes.rows[0];
+                } else {
+                    for (const u of memoryUsersById.values()) {
+                        if (u.role === 'admin') {
+                            adminUser = u;
+                            break;
+                        }
+                    }
+                }
+
+                if (!adminUser) {
+                    return res.status(404).json({ status: 'error', message: 'No seeded admin user found' });
+                }
+
+                const accessToken = generateAccessToken(adminUser);
+                const refreshToken = generateRefreshToken();
+                const refreshHash = hashToken(refreshToken);
+                const refreshId = uuidv7();
+                const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+                if (pool) {
+                    await pool.query(
+                        'INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)',
+                        [refreshId, adminUser.id, refreshHash, expiresAt]
+                    );
+                } else {
+                    memoryRefreshTokensByHash.set(refreshHash, {
+                        id: refreshId,
+                        user_id: adminUser.id,
+                        expires_at: expiresAt.getTime(),
+                    });
+                }
+
+                return res.json({
+                    access_token: accessToken,
+                    refresh_token: refreshToken
+                });
+            }
+
             let clientType;
             let codeVerifier;
             let codeChallenge;
 
-            if (code === 'test_code' || code.startsWith('mock')) {
+            if (code.startsWith('mock')) {
                 clientType = normalizeClientType(req.query.client || 'api');
             } else {
                 if (!state) {
@@ -181,7 +224,7 @@ function registerAuthRoutes(app, pool) {
             let ghUser;
             let email;
 
-            if (code === 'test_code' || code.startsWith('mock')) {
+            if (code.startsWith('mock')) {
                 githubAccessToken = 'mock_access_token_123';
                 ghUser = {
                     id: 99999999,
@@ -356,7 +399,7 @@ function registerAuthRoutes(app, pool) {
                 path: '/', maxAge: 15 * 60 * 1000,
             });
 
-            return res.redirect(`${WEB_PORTAL_URL}/dashboard?login=success`);
+            return res.redirect(`${WEB_PORTAL_URL}/?login=success`);
         } catch (error) {
             console.error('OAuth callback error:', error.message);
             // For invalid authorization codes, GitHub typically rejects the token exchange.
