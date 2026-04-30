@@ -79,7 +79,7 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
                 res.setHeader('X-RateLimit-Remaining', String(remaining));
                 res.setHeader('Retry-After', String(Math.ceil(windowMs / 1000)));
 
-                if (count > maxRequests) {
+                if (count >= maxRequests) {
                     console.log(`[RateLimit] BLOCKING ${key} (${count}/${maxRequests})`);
                     return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
                 }
@@ -103,7 +103,7 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
         res.setHeader('X-RateLimit-Limit', String(maxRequests));
         res.setHeader('X-RateLimit-Remaining', String(remaining));
 
-        if (count > maxRequests) {
+        if (count >= maxRequests) {
             console.log(`[RateLimit-MEM] BLOCKING ${key} (${count}/${maxRequests})`);
             return res.status(429).json({ status: 'error', message: 'Too many requests, please try again later' });
         }
@@ -111,7 +111,7 @@ function dbRateLimiter(prefix, maxRequests, windowMs) {
     };
 }
 
-const authGithubLimiter = dbRateLimiter('auth_github', 10, 60 * 1000);
+const authGithubLimiter = dbRateLimiter('auth_github', 11, 60 * 1000);
 const generalLimiter = dbRateLimiter('general', 100, 15 * 60 * 1000);
 
 // Request logging
