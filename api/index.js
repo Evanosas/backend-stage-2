@@ -143,7 +143,7 @@ app.get('/', (req, res) => {
     res.json({
         status: 'success',
         message: 'Welcome to Insighta Labs+ API',
-        version: 'v1'
+        version: 'v1.0.5'
     });
 });
 
